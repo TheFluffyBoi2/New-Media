@@ -1,0 +1,693 @@
+<!doctype html>
+<html lang="ro">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Radiohead - Karma Police Three.js</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background-color: #000;
+      }
+      canvas {
+        display: block;
+      }
+      .hud {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 10;
+        padding: 10px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(8, 8, 8, 0.65);
+        color: #f4f4f4;
+        font-family: "Consolas", "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.45;
+        border-radius: 8px;
+        user-select: none;
+        pointer-events: none;
+      }
+      .hud .title {
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="startContainer"
+      style="position: fixed; top: 20px; right: 20px; z-index: 999"
+    >
+      <button
+        id="btnPlay"
+        style="
+          padding: 10px 20px;
+          background: rgba(0, 0, 0, 0.7);
+          border: 1px solid #fff;
+          color: #fff;
+          font-family: &quot;Consolas&quot;, monospace;
+          font-size: 14px;
+          cursor: pointer;
+          border-radius: 5px;
+          box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+        "
+      >
+        Start animation
+      </button>
+    </div>
+    <div class="hud" id="cameraHud">
+      <div class="title">Camera Controls</div>
+      <div>1: Camera Frontala (masina vine spre tine)</div>
+      <div>2: Camera Interior (bord)</div>
+      <div>3: Interior cinematic</div>
+      <div>4: Front low (bot + faruri)</div>
+      <div>5: Hood view</div>
+      <div>6: Replay intro</div>
+      <div>7: Fire front mode</div>
+      <div>Sageti: stanga/dreapta pe X, sus/jos pe Y</div>
+      <div>+ / -: zoom (FOV)</div>
+      <div id="cameraModeText">Mod activ: Frontala</div>
+      <div id="cameraOffsetText">Offset: x 0.00 y 2.00 z 8.50</div>
+      <div id="cameraFovText">FOV: 75</div>
+    </div>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(
+        130,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000,
+      );
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 0.95;
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      let roadMaterial;
+      let grassMaterial;
+      let carModel;
+
+      let sound;
+      let audioLoader;
+      let audioStarted = false;
+      let userClickedStart = false;
+
+      let driveStarted = false;
+
+      function initAudio() {
+        const listener = new THREE.AudioListener();
+        camera.add(listener);
+
+        sound = new THREE.Audio(listener);
+
+        audioLoader = new THREE.AudioLoader();
+        audioLoader.load(
+          "song.wav",
+          function (buffer) {
+            sound.setBuffer(buffer);
+            sound.setLoop(true);
+            sound.setVolume(1);
+
+            if (userClickedStart && !audioStarted) {
+              sound.play();
+              audioStarted = true;
+            }
+          },
+          undefined,
+          function (err) {
+            console.error("Nu s-a incarcat melodia:", err);
+          },
+        );
+      }
+      initAudio();
+
+      const cameraModeText = document.getElementById("cameraModeText");
+      const cameraOffsetText = document.getElementById("cameraOffsetText");
+      const cameraFovText = document.getElementById("cameraFovText");
+
+      const cameraModes = {
+        1: {
+          name: "Frontala",
+          offset: new THREE.Vector3(0, 13.7, 8.5),
+          lookAhead: new THREE.Vector3(0, 1.2, 0.5),
+          fov: 130,
+          shake: false,
+        },
+        2: {
+          name: "Interior",
+          offset: new THREE.Vector3(0, 2.75, -1.05),
+          lookAhead: new THREE.Vector3(0, 1.15, 7.5),
+          fov: 130,
+          shake: false,
+        },
+        3: {
+          name: "Interior Cinematic",
+          offset: new THREE.Vector3(-0.55, 2.62, -0.9),
+          lookAhead: new THREE.Vector3(-0.2, 1.08, 7.8),
+          fov: 108,
+          shake: true,
+        },
+        4: {
+          name: "Front Low",
+          offset: new THREE.Vector3(0, 3.8, 7.2),
+          lookAhead: new THREE.Vector3(0, 0.9, 1.0),
+          fov: 92,
+          shake: false,
+        },
+        5: {
+          name: "Hood View",
+          offset: new THREE.Vector3(1, 2.15, 1.8),
+          lookAhead: new THREE.Vector3(0, 1.0, 12.0),
+          fov: 88,
+          shake: true,
+        },
+        7: {
+          name: "Fire Front",
+          offset: new THREE.Vector3(0, 3.9, 7.0),
+          lookAhead: new THREE.Vector3(0, 1.1, 2.2),
+          fov: 92,
+          shake: false,
+        },
+      };
+
+      let activeCameraMode = 1;
+      const cameraMoveStep = 0.15;
+
+      const worldCameraPos = new THREE.Vector3();
+      const worldLookAtPos = new THREE.Vector3();
+      const carBounds = new THREE.Box3();
+
+      const clock = new THREE.Clock();
+
+      let currentCameraPos = new THREE.Vector3(0, 20, 20);
+      let currentLookAtPos = new THREE.Vector3(0, 10, 10);
+      let targetCameraPos = new THREE.Vector3();
+      let targetLookAtPos = new THREE.Vector3();
+
+      let cameraShakeTime = 0;
+
+      let introActive = false;
+      let introPhase = "WAITING";
+      let introTimer = 0;
+      let introProgress = 0;
+      const waitDuration = 4.0;
+      const introDuration = 17.0;
+
+      let isTransitioning = false;
+      let currentFovTarget = 130;
+
+      let leftHeadlight;
+      let rightHeadlight;
+      let leftHeadlightTarget;
+      let rightHeadlightTarget;
+
+      let fireGroup = null;
+      let fireLight = null;
+      let fireMode = false;
+
+      function alignCarToGround(model, groundY = 0, clearance = 0.03) {
+        carBounds.setFromObject(model);
+        const yOffset = groundY - carBounds.min.y + clearance;
+        model.position.y += yOffset;
+      }
+
+      function createHeadlightsForCar(model) {
+        leftHeadlight = new THREE.SpotLight(
+          0xfaf6d2,
+          0,
+          260,
+          Math.PI / 7,
+          0.45,
+          1,
+        );
+        rightHeadlight = new THREE.SpotLight(
+          0xfaf6d2,
+          0,
+          260,
+          Math.PI / 7,
+          0.45,
+          1,
+        );
+
+        leftHeadlight.userData.targetIntensity = 260;
+        rightHeadlight.userData.targetIntensity = 260;
+
+        leftHeadlight.position.set(-0.72, 0.72, 2.55);
+        rightHeadlight.position.set(0.72, 0.72, 2.55);
+
+        leftHeadlightTarget = new THREE.Object3D();
+        rightHeadlightTarget = new THREE.Object3D();
+
+        leftHeadlightTarget.position.set(-0.9, 0.2, 38);
+        rightHeadlightTarget.position.set(0.9, 0.2, 38);
+
+        model.add(leftHeadlight);
+        model.add(rightHeadlight);
+        model.add(leftHeadlightTarget);
+        model.add(rightHeadlightTarget);
+
+        leftHeadlight.target = leftHeadlightTarget;
+        rightHeadlight.target = rightHeadlightTarget;
+      }
+
+      function createFireEffect(model) {
+        fireGroup = new THREE.Group();
+
+        const fireMaterial1 = new THREE.MeshBasicMaterial({
+          color: 0xffaa33,
+          transparent: true,
+          opacity: 0.75,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+
+        const fireMaterial2 = new THREE.MeshBasicMaterial({
+          color: 0xff5522,
+          transparent: true,
+          opacity: 0.55,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+
+        const flame1 = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.4, 2.2),
+          fireMaterial1,
+        );
+        flame1.position.set(-0.45, 1.0, 2.9);
+
+        const flame2 = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.3, 2.0),
+          fireMaterial2,
+        );
+        flame2.position.set(0.4, 1.05, 2.95);
+
+        const flame3 = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.9, 1.6),
+          fireMaterial1.clone(),
+        );
+        flame3.position.set(0.0, 1.35, 2.75);
+
+        fireGroup.add(flame1);
+        fireGroup.add(flame2);
+        fireGroup.add(flame3);
+
+        fireGroup.visible = false;
+        model.add(fireGroup);
+
+        fireLight = new THREE.PointLight(0xff6a00, 0, 12, 2);
+        fireLight.position.set(0, 1.2, 2.8);
+        model.add(fireLight);
+      }
+
+      function updateCameraHud() {
+        const mode = cameraModes[activeCameraMode];
+        cameraModeText.textContent = `Mod activ: ${mode.name}`;
+        cameraOffsetText.textContent = `Offset: x ${mode.offset.x.toFixed(
+          2,
+        )} y ${mode.offset.y.toFixed(2)} z ${mode.offset.z.toFixed(2)}`;
+        cameraFovText.textContent = `FOV: ${camera.fov.toFixed(0)}`;
+      }
+
+      function setCameraMode(modeId) {
+        activeCameraMode = modeId;
+
+        const mode = cameraModes[activeCameraMode];
+        currentFovTarget = mode.fov ?? 130;
+
+        isTransitioning = true;
+        updateCameraHud();
+      }
+
+      function applyInteriorShake(basePos, time) {
+        const x = Math.sin(time * 7.0) * 0.015;
+        const y = Math.sin(time * 11.0) * 0.01;
+        const z = Math.sin(time * 9.0) * 0.012;
+
+        basePos.x += x;
+        basePos.y += y;
+        basePos.z += z;
+      }
+
+      function startIntroAnimation() {
+        document.getElementById("cameraHud").style.display = "none";
+        if (!audioStarted && sound && sound.buffer) {
+          sound.play();
+          audioStarted = true;
+        }
+        introActive = true;
+        introProgress = 0;
+        introPhase = "WAITING";
+        introTimer = 0;
+        introProgress = 0;
+        camera.fov = cameraModes[5].fov;
+        camera.updateProjectionMatrix();
+
+        if (carModel) {
+          const startOffset = new THREE.Vector3(0.0, 2.3, -2.5);
+          const startLook = new THREE.Vector3(-10.0, 1.2, -15.0);
+
+          currentCameraPos.copy(startOffset);
+          currentLookAtPos.copy(startLook);
+
+          carModel.localToWorld(currentCameraPos);
+          carModel.localToWorld(currentLookAtPos);
+        }
+      }
+
+      function getIntroCamera(carModel, progress) {
+        const startOffset = new THREE.Vector3(0.0, 2.3, -2.5);
+        const startLook = new THREE.Vector3(-10.0, 1.2, -15.0);
+
+        const endOffset = cameraModes[5].offset.clone();
+        const endLook = cameraModes[5].lookAhead.clone();
+
+        const smooth = progress * progress * (3 - 2 * progress);
+
+        const introCam = startOffset.clone().lerp(endOffset, smooth);
+        const introLook = startLook.clone().lerp(endLook, smooth);
+
+        introLook.x += Math.sin(smooth * Math.PI) * -15.0;
+        introLook.y += Math.sin(smooth * Math.PI) * 1.5;
+
+        const worldCam = introCam.clone();
+        const worldLook = introLook.clone();
+
+        carModel.localToWorld(worldCam);
+        carModel.localToWorld(worldLook);
+
+        return { worldCam, worldLook };
+      }
+
+      const loader = new GLTFLoader();
+      loader.load("scene.glb", (gltf) => {
+        const sceneGroup = gltf.scene;
+        scene.add(sceneGroup);
+
+        sceneGroup.traverse((child) => {
+          if (child.isMesh) {
+            // SETĂRI DRUM
+            if (child.name.toLowerCase() === "road") {
+              roadMaterial = child.material;
+              if (roadMaterial.map) {
+                const tex = roadMaterial.map;
+                tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+              }
+              roadMaterial.map.offset.x = 0.02;
+            }
+
+            // SETĂRI IARBĂ
+            if (child.name.toLowerCase() === "grass") {
+              grassMaterial = child.material;
+              if (grassMaterial.map) {
+                grassMaterial.map.wrapS = grassMaterial.map.wrapT =
+                  THREE.RepeatWrapping;
+                // Putem lăsa repetarea standard (1, 1) sau o putem mări dacă iarba pare "întinsă"
+                grassMaterial.map.repeat.set(5, 5);
+              }
+            }
+          }
+        });
+      });
+      // Încărcăm MAȘINA (asigură-te că fișierul se numește exact car.glb)
+      loader.load(
+        "car.glb",
+        (gltf) => {
+          carModel = gltf.scene;
+          alignCarToGround(carModel);
+
+          carModel.position.x = -1.8;
+
+          createHeadlightsForCar(carModel);
+          createFireEffect(carModel);
+
+          // Bec interior pentru habitaclu.
+          const interiorLight = new THREE.PointLight(0xfff1c1, 5.2, 7.5, 2);
+          interiorLight.position.set(0, 1.35, 0.25);
+          carModel.add(interiorLight);
+
+          scene.add(carModel);
+        },
+        undefined,
+        (error) => {
+          console.error("Eroare la mașină:", error);
+        },
+      );
+
+      // Poziția camerei
+      camera.position.set(0, 20, 20);
+      camera.lookAt(0, 10, 10);
+
+      window.addEventListener("keydown", (event) => {
+        const mode = cameraModes[activeCameraMode];
+
+        if (event.code === "Digit1") {
+          fireMode = false;
+          if (fireGroup) fireGroup.visible = false;
+          setCameraMode(1);
+          return;
+        }
+
+        if (event.code === "Digit2") {
+          fireMode = false;
+          if (fireGroup) fireGroup.visible = false;
+          setCameraMode(2);
+          return;
+        }
+
+        if (event.code === "Digit3") {
+          fireMode = false;
+          if (fireGroup) fireGroup.visible = false;
+          setCameraMode(3);
+          return;
+        }
+
+        if (event.code === "Digit4") {
+          fireMode = false;
+          if (fireGroup) fireGroup.visible = false;
+          setCameraMode(4);
+          return;
+        }
+
+        if (event.code === "Digit5") {
+          fireMode = false;
+          if (fireGroup) fireGroup.visible = false;
+          setCameraMode(5);
+          return;
+        }
+
+        if (event.code === "Digit6") {
+          fireMode = false;
+          if (fireGroup) fireGroup.visible = false;
+          startIntroAnimation();
+          return;
+        }
+        if (event.code === "Digit7") {
+          fireMode = true;
+          if (fireGroup) fireGroup.visible = true;
+          setCameraMode(7);
+          return;
+        }
+
+        if (event.code === "ArrowLeft") {
+          mode.offset.x -= cameraMoveStep;
+          updateCameraHud();
+          return;
+        }
+
+        if (event.code === "ArrowRight") {
+          mode.offset.x += cameraMoveStep;
+          updateCameraHud();
+          return;
+        }
+
+        if (event.code === "ArrowUp") {
+          mode.offset.y += cameraMoveStep;
+          updateCameraHud();
+          return;
+        }
+
+        if (event.code === "ArrowDown") {
+          mode.offset.y -= cameraMoveStep;
+          updateCameraHud();
+          return;
+        }
+
+        if (event.code === "Equal" || event.code === "NumpadAdd") {
+          camera.fov = Math.max(40, camera.fov - 2);
+          camera.updateProjectionMatrix();
+          updateCameraHud();
+          return;
+        }
+
+        if (event.code === "Minus" || event.code === "NumpadSubtract") {
+          camera.fov = Math.min(130, camera.fov + 2);
+          camera.updateProjectionMatrix();
+          updateCameraHud();
+        }
+      });
+
+      updateCameraHud();
+
+      // Lumină ambientală minimă ca să vedem ceva
+      const ambient = new THREE.AmbientLight(0xffffff, 0.28);
+      scene.add(ambient);
+
+      const hemi = new THREE.HemisphereLight(0x8aa0ff, 0x0f120f, 0.22);
+      scene.add(hemi);
+
+      const intensity = 190; // Puterea luminii
+      const distance = 230; // Cât de departe să bată
+
+      function creeazaFar(xPos) {
+        const far = new THREE.SpotLight(0xffffff, intensity, distance);
+
+        // Z = 2.5 este valoarea critică. Dacă farul e tot în mașină,
+        // mărește la 3.0 sau 3.5 până vezi că „iese” prin față.
+        far.position.set(xPos, 0.6, 2.5);
+
+        far.angle = Math.PI / 6;
+        far.penumbra = 0.5;
+        far.decay = 1; // Face lumina să scadă natural în depărtare
+
+        scene.add(far);
+
+        // Ținta luminii (unde bat farurile)
+        const target = new THREE.Object3D();
+        target.position.set(xPos, 0, 10); // Bat în față, spre depărtare
+        scene.add(target);
+        far.target = target;
+      }
+
+      // Apelăm funcția de două ori pentru cele două faruri
+      creeazaFar(-0.7); // Stânga
+      creeazaFar(0.7); // Dreapta
+
+      function animate() {
+        requestAnimationFrame(animate);
+
+        const dt = clock.getDelta();
+        const elapsed = clock.getElapsedTime();
+
+        if (fireMode && fireGroup && fireLight) {
+          fireLight.intensity = 2.8 + Math.sin(elapsed * 14.0) * 0.8;
+
+          fireGroup.children.forEach((flame, i) => {
+            flame.rotation.y = Math.sin(elapsed * (3.5 + i)) * 0.25;
+            flame.scale.y = 1.0 + Math.sin(elapsed * (8.0 + i * 2.0)) * 0.12;
+            flame.position.y =
+              1.0 + i * 0.15 + Math.sin(elapsed * (9.0 + i)) * 0.08;
+          });
+        } else if (fireLight) {
+          fireLight.intensity = 0;
+        }
+
+        if (driveStarted) {
+          if (roadMaterial && roadMaterial.map) {
+            roadMaterial.map.offset.y -= 0.00135;
+          }
+
+          if (grassMaterial && grassMaterial.map) {
+            grassMaterial.map.offset.y -= 0.0035;
+          }
+        }
+
+        if (driveStarted && leftHeadlight && rightHeadlight) {
+          leftHeadlight.intensity +=
+            (leftHeadlight.userData.targetIntensity - leftHeadlight.intensity) *
+            0.03;
+
+          rightHeadlight.intensity +=
+            (rightHeadlight.userData.targetIntensity -
+              rightHeadlight.intensity) *
+            0.03;
+        }
+
+        if (carModel) {
+          if (introActive) {
+            if (introPhase === "WAITING") {
+              introTimer += dt;
+              if (introTimer >= waitDuration) {
+                introPhase = "MOVING";
+              }
+            } else {
+              introProgress += dt / introDuration;
+              const p = Math.min(introProgress, 1);
+              const introData = getIntroCamera(carModel, p);
+              currentCameraPos.lerp(introData.worldCam, 0.08);
+              currentLookAtPos.lerp(introData.worldLook, 0.08);
+
+              camera.position.copy(currentCameraPos);
+              camera.lookAt(currentLookAtPos);
+
+              camera.fov += (cameraModes[5].fov - camera.fov) * 0.05;
+              camera.updateProjectionMatrix();
+
+              if (p >= 1) {
+                introActive = false;
+                driveStarted = true;
+                setCameraMode(5);
+              }
+            }
+          } else {
+            const mode = cameraModes[activeCameraMode];
+
+            targetCameraPos.copy(mode.offset);
+            carModel.localToWorld(targetCameraPos);
+
+            targetLookAtPos.copy(mode.lookAhead);
+            carModel.localToWorld(targetLookAtPos);
+
+            if (mode.shake) {
+              applyInteriorShake(targetCameraPos, elapsed);
+            }
+
+            currentCameraPos.lerp(targetCameraPos, 0.08);
+            currentLookAtPos.lerp(targetLookAtPos, 0.08);
+
+            camera.fov += (currentFovTarget - camera.fov) * 0.08;
+            camera.updateProjectionMatrix();
+          }
+        }
+
+        camera.position.copy(currentCameraPos);
+        camera.lookAt(currentLookAtPos);
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      // Ajustare fereastră la resize
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      document.getElementById("btnPlay").addEventListener("click", () => {
+        userClickedStart = true;
+        if (sound && sound.context && sound.context.state === "suspended") {
+          sound.context.resume();
+        }
+        startIntroAnimation();
+        document.getElementById("startContainer").style.display = "none";
+      });
+    </script>
+  </body>
+</html>
