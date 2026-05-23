@@ -83,9 +83,11 @@
     </script>
 
     <script type="module">
+      // Importuri principale pentru Three.js
       import * as THREE from "three";
       import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
+      // Creez scena 3D (container pentru toate obiectele)
       const scene = new THREE.Scene();
       const camera = new THREE.PerspectiveCamera(
         130,
@@ -99,15 +101,18 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
       document.body.appendChild(renderer.domElement);
 
+      // Variabile globale pentru materialele si modelele incarcate
       let roadMaterial;
       let grassMaterial;
       let carModel;
 
+      // Variabile audio: loader si stare de redare
       let sound;
       let audioLoader;
       let audioStarted = false;
       let userClickedStart = false;
 
+      // Stare a antrenarii/rupei (daca masina 'merge')
       let driveStarted = false;
 
       function initAudio() {
@@ -141,6 +146,7 @@
       const cameraOffsetText = document.getElementById("cameraOffsetText");
       const cameraFovText = document.getElementById("cameraFovText");
 
+      // Definitii pentru moduri de camera (offset-uri si tinta de privit)
       const cameraModes = {
         1: {
           name: "Frontala",
@@ -220,6 +226,43 @@
       let fireGroup = null;
       let fireLight = null;
       let fireMode = false;
+      const roadsidePoles = [];
+      let runnerGroup = null;
+      let runnerVisible = false;
+      let runnerElapsed = 0;
+      let runnerFinished = false;
+      let runnerPhase = "approach";
+      let runnerChaseOffset = 0;
+      let leftArm;
+      let rightArm;
+      let leftLeg;
+      let rightLeg;
+      let torso;
+
+      const poleSettings = {
+        laneX: -12.5,
+        spacing: 100,
+        count: 18,
+        minZ: -60,
+        maxZ: 400,
+        speed: 15,
+      };
+
+      const runnerSettings = {
+        spawnDelay: 6.5,
+        spawnZ: 210,
+        laneX: -1.8,
+        closingSpeed: 5.2,
+        chaseZ: 36,
+        chaseEnterZ: 44,
+        chaseLerp: 0.08,
+        chaseOffsetLerp: 0.03,
+        chaseBobAmp: 0.9,
+        minScale: 0.92,
+        maxScale: 2.15,
+        nearDistance: 32,
+        farDistance: 240,
+      };
 
       function alignCarToGround(model, groundY = 0, clearance = 0.03) {
         carBounds.setFromObject(model);
@@ -317,6 +360,282 @@
         model.add(fireLight);
       }
 
+      // Creeaza stalpi pe marginea drumului si fire vizuale (recycle pe Z)
+      function createRoadsidePoles() {
+        const towardRoad = poleSettings.laneX > 0 ? -1 : 1;
+
+        const poleMaterial = new THREE.MeshStandardMaterial({
+          color: 0x83603d,
+          roughness: 0.9,
+          metalness: 0.18,
+        });
+
+        const cableMaterial = new THREE.LineBasicMaterial({
+          color: 0x595e66,
+          transparent: true,
+          opacity: 0.85,
+        });
+
+        const poleOffsetX = -15;
+
+        const poleGeometry = new THREE.CylinderGeometry(0.13, 0.2, 11.8, 10);
+        const armGeometry = new THREE.BoxGeometry(1.8, 0.1, 0.1);
+
+        for (let i = 0; i < poleSettings.count; i += 1) {
+          const z = poleSettings.maxZ - i * poleSettings.spacing;
+          const poleGroup = new THREE.Group();
+
+          const pole = new THREE.Mesh(poleGeometry, poleMaterial);
+          pole.position.y = 5.9;
+          pole.position.x = poleOffsetX;
+
+          const arm = new THREE.Mesh(armGeometry, poleMaterial);
+          arm.position.set(towardRoad * 0.62, 10.45, 0);
+          arm.position.x = poleOffsetX;
+
+          const tipTop = new THREE.Vector3(
+            poleOffsetX + towardRoad * 1.45,
+            10.45,
+            0,
+          );
+          const tipMid = new THREE.Vector3(
+            poleOffsetX + towardRoad * 1.12,
+            9.85,
+            0,
+          );
+
+          const topCableGeom = new THREE.BufferGeometry().setFromPoints([
+            tipTop,
+            new THREE.Vector3(poleOffsetX + towardRoad * 2.25, 10.1, 0),
+            new THREE.Vector3(poleOffsetX + towardRoad * 3.4, 9.9, 0),
+          ]);
+          const midCableGeom = new THREE.BufferGeometry().setFromPoints([
+            tipMid,
+            new THREE.Vector3(poleOffsetX + towardRoad * 1.8, 9.5, 0),
+            new THREE.Vector3(poleOffsetX + towardRoad * 2.8, 9.2, 0),
+          ]);
+
+          const topCable = new THREE.Line(topCableGeom, cableMaterial);
+          const midCable = new THREE.Line(midCableGeom, cableMaterial);
+
+          poleGroup.add(pole);
+          poleGroup.add(arm);
+          poleGroup.add(topCable);
+          poleGroup.add(midCable);
+
+          poleGroup.position.set(
+            poleSettings.laneX + Math.sin(i * 0.8) * 0.4,
+            0,
+            z,
+          );
+          poleGroup.rotation.y = (Math.random() - 0.5) * 0.05;
+
+          roadsidePoles.push(poleGroup);
+          scene.add(poleGroup);
+        }
+      }
+
+      // Actualizeaza pozitia stalpilor in timpul animatiei (miscare spre camera)
+      function updateRoadsidePoles(dt) {
+        for (const pole of roadsidePoles) {
+          pole.position.z -= poleSettings.speed * dt;
+
+          if (pole.position.z < poleSettings.minZ) {
+            pole.position.z +=
+              poleSettings.count * poleSettings.spacing + Math.random() * 3;
+          }
+        }
+      }
+
+      // Creeaza un personaj simplu procedural care alearga
+      // (cap, trunchi, brate, picioare, pantofi)
+      function createRunner() {
+        runnerGroup = new THREE.Group();
+
+        const clothes = new THREE.MeshStandardMaterial({
+          color: 0x2f3138,
+          roughness: 0.85,
+          metalness: 0.05,
+        });
+
+        const skin = new THREE.MeshStandardMaterial({
+          color: 0xb88463,
+          roughness: 0.92,
+          metalness: 0.0,
+        });
+
+        const shoeMat = new THREE.MeshStandardMaterial({
+          color: 0x17181b,
+          roughness: 0.9,
+          metalness: 0.08,
+        });
+
+        torso = new THREE.Mesh(
+          new THREE.BoxGeometry(0.52, 0.85, 0.24),
+          clothes,
+        );
+        torso.position.set(0, 1.45, 0);
+
+        const head = new THREE.Mesh(
+          new THREE.SphereGeometry(0.2, 16, 16),
+          skin,
+        );
+        head.position.set(0, 2.08, 0);
+
+        leftArm = new THREE.Group();
+        rightArm = new THREE.Group();
+        leftLeg = new THREE.Group();
+        rightLeg = new THREE.Group();
+
+        const upperArmGeo = new THREE.BoxGeometry(0.14, 0.46, 0.14);
+        const lowerLegGeo = new THREE.BoxGeometry(0.16, 0.58, 0.18);
+
+        const leftArmMesh = new THREE.Mesh(upperArmGeo, clothes);
+        leftArmMesh.position.y = -0.23;
+        leftArm.add(leftArmMesh);
+        leftArm.position.set(-0.36, 1.74, 0);
+
+        const rightArmMesh = new THREE.Mesh(upperArmGeo, clothes);
+        rightArmMesh.position.y = -0.23;
+        rightArm.add(rightArmMesh);
+        rightArm.position.set(0.36, 1.74, 0);
+
+        const leftLegMesh = new THREE.Mesh(lowerLegGeo, clothes);
+        leftLegMesh.position.y = -0.29;
+        leftLeg.add(leftLegMesh);
+        leftLeg.position.set(-0.16, 1.03, 0);
+
+        const rightLegMesh = new THREE.Mesh(lowerLegGeo, clothes);
+        rightLegMesh.position.y = -0.29;
+        rightLeg.add(rightLegMesh);
+        rightLeg.position.set(0.16, 1.03, 0);
+
+        const leftShoe = new THREE.Mesh(
+          new THREE.BoxGeometry(0.2, 0.08, 0.34),
+          shoeMat,
+        );
+        leftShoe.position.set(0, 0.06, 0.1);
+        leftLegMesh.add(leftShoe);
+
+        const rightShoe = new THREE.Mesh(
+          new THREE.BoxGeometry(0.2, 0.08, 0.34),
+          shoeMat,
+        );
+        rightShoe.position.set(0, 0.06, 0.1);
+        rightLegMesh.add(rightShoe);
+
+        runnerGroup.add(torso);
+        runnerGroup.add(head);
+        runnerGroup.add(leftArm);
+        runnerGroup.add(rightArm);
+        runnerGroup.add(leftLeg);
+        runnerGroup.add(rightLeg);
+
+        runnerGroup.position.set(
+          runnerSettings.laneX,
+          0,
+          runnerSettings.spawnZ,
+        );
+        runnerGroup.visible = false;
+        scene.add(runnerGroup);
+      }
+
+      function resetRunner() {
+        runnerElapsed = 0;
+        runnerVisible = false;
+        runnerFinished = false;
+        runnerPhase = "approach";
+        runnerChaseOffset = 0;
+
+        if (runnerGroup) {
+          runnerGroup.visible = false;
+          runnerGroup.scale.setScalar(runnerSettings.minScale);
+          runnerGroup.position.set(
+            runnerSettings.laneX,
+            0,
+            runnerSettings.spawnZ,
+          );
+          runnerGroup.position.y = 0;
+          leftArm.rotation.set(0, 0, 0);
+          rightArm.rotation.set(0, 0, 0);
+          leftLeg.rotation.set(0, 0, 0);
+          rightLeg.rotation.set(0, 0, 0);
+          torso.rotation.set(0, 0, 0);
+          torso.position.y = 1.45;
+        }
+      }
+
+      // Actualizeaza starea alergatorului: spawn, approach si chase
+      // Controleaza si scalarea in functie de distanta pentru efect de "apropiere"
+      function updateRunner(dt, elapsed) {
+        if (!runnerGroup || runnerFinished) return;
+
+        runnerElapsed += dt;
+
+        if (!runnerVisible && runnerElapsed >= runnerSettings.spawnDelay) {
+          runnerVisible = true;
+          runnerGroup.visible = true;
+        }
+
+        if (!runnerVisible) return;
+
+        if (runnerPhase === "approach") {
+          runnerGroup.position.z -= runnerSettings.closingSpeed * dt;
+
+          if (runnerGroup.position.z <= runnerSettings.chaseEnterZ) {
+            runnerPhase = "chase";
+            runnerChaseOffset = runnerGroup.position.z - runnerSettings.chaseZ;
+          }
+        } else if (runnerPhase === "chase") {
+          runnerChaseOffset = THREE.MathUtils.lerp(
+            runnerChaseOffset,
+            0,
+            runnerSettings.chaseOffsetLerp,
+          );
+
+          const targetZ =
+            runnerSettings.chaseZ +
+            runnerChaseOffset +
+            Math.sin(elapsed * 0.9) * runnerSettings.chaseBobAmp;
+
+          runnerGroup.position.z = THREE.MathUtils.lerp(
+            runnerGroup.position.z,
+            targetZ,
+            runnerSettings.chaseLerp,
+          );
+        }
+
+        const runCycle = elapsed * 9.0;
+        leftLeg.rotation.x = Math.sin(runCycle) * 0.74;
+        rightLeg.rotation.x = Math.sin(runCycle + Math.PI) * 0.74;
+        leftArm.rotation.x = Math.sin(runCycle + Math.PI) * 0.95;
+        rightArm.rotation.x = Math.sin(runCycle) * 0.95;
+        leftArm.rotation.z = 0;
+        rightArm.rotation.z = 0;
+        torso.rotation.x = Math.sin(runCycle * 2.0) * 0.04;
+        torso.position.y = 1.45;
+        runnerGroup.position.y = Math.abs(Math.sin(runCycle * 2.0)) * 0.06;
+
+        const dist = camera.position.distanceTo(runnerGroup.position);
+        const t = THREE.MathUtils.clamp(
+          (dist - runnerSettings.nearDistance) /
+            (runnerSettings.farDistance - runnerSettings.nearDistance),
+          0,
+          1,
+        );
+        const targetScale = THREE.MathUtils.lerp(
+          runnerSettings.maxScale,
+          runnerSettings.minScale,
+          t,
+        );
+        const smoothedScale = THREE.MathUtils.lerp(
+          runnerGroup.scale.x,
+          targetScale,
+          0.12,
+        );
+        runnerGroup.scale.setScalar(smoothedScale);
+      }
+
       function updateCameraHud() {
         const mode = cameraModes[activeCameraMode];
         cameraModeText.textContent = `Mod activ: ${mode.name}`;
@@ -348,6 +667,7 @@
 
       function startIntroAnimation() {
         document.getElementById("cameraHud").style.display = "none";
+        resetRunner();
         if (!audioStarted && sound && sound.buffer) {
           sound.play();
           audioStarted = true;
@@ -396,7 +716,9 @@
         return { worldCam, worldLook };
       }
 
+      // Loader pentru fisiere GLTF/GLB: incarcam elementele statice si dinamice
       const loader = new GLTFLoader();
+      // Incarcam scena (drum, iarba, fundal)
       loader.load("scene.glb", (gltf) => {
         const sceneGroup = gltf.scene;
         scene.add(sceneGroup);
@@ -455,6 +777,7 @@
       camera.position.set(0, 20, 20);
       camera.lookAt(0, 10, 10);
 
+      // Handler pentru comenzi tastatura: schimbare mod camera, zoom, offset
       window.addEventListener("keydown", (event) => {
         const mode = cameraModes[activeCameraMode];
 
@@ -553,6 +876,9 @@
       const hemi = new THREE.HemisphereLight(0x8aa0ff, 0x0f120f, 0.22);
       scene.add(hemi);
 
+      createRoadsidePoles();
+      createRunner();
+
       const intensity = 190; // Puterea luminii
       const distance = 230; // Cât de departe să bată
 
@@ -580,6 +906,7 @@
       creeazaFar(-0.7); // Stânga
       creeazaFar(0.7); // Dreapta
 
+      // Bucla principala de animatie: update si render la fiecare frame
       function animate() {
         requestAnimationFrame(animate);
 
@@ -607,6 +934,9 @@
           if (grassMaterial && grassMaterial.map) {
             grassMaterial.map.offset.y -= 0.0035;
           }
+
+          updateRoadsidePoles(dt);
+          updateRunner(dt, elapsed);
         }
 
         if (driveStarted && leftHeadlight && rightHeadlight) {
@@ -680,11 +1010,13 @@
         renderer.setSize(window.innerWidth, window.innerHeight);
       });
 
+      // Buton Start: porneste intro si audio la click
       document.getElementById("btnPlay").addEventListener("click", () => {
         userClickedStart = true;
         if (sound && sound.context && sound.context.state === "suspended") {
           sound.context.resume();
         }
+        resetRunner();
         startIntroAnimation();
         document.getElementById("startContainer").style.display = "none";
       });
