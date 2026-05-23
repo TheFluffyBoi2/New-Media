@@ -83,11 +83,9 @@
     </script>
 
     <script type="module">
-      // Importuri principale pentru Three.js
       import * as THREE from "three";
       import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
-      // Creez scena 3D (container pentru toate obiectele)
       const scene = new THREE.Scene();
       const camera = new THREE.PerspectiveCamera(
         130,
@@ -101,18 +99,15 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
       document.body.appendChild(renderer.domElement);
 
-      // Variabile globale pentru materialele si modelele incarcate
       let roadMaterial;
       let grassMaterial;
       let carModel;
 
-      // Variabile audio: loader si stare de redare
       let sound;
       let audioLoader;
       let audioStarted = false;
       let userClickedStart = false;
 
-      // Stare a antrenarii/rupei (daca masina 'merge')
       let driveStarted = false;
 
       function initAudio() {
@@ -127,7 +122,7 @@
           function (buffer) {
             sound.setBuffer(buffer);
             sound.setLoop(true);
-            sound.setVolume(1);
+            sound.setVolume(5);
 
             if (userClickedStart && !audioStarted) {
               sound.play();
@@ -146,7 +141,6 @@
       const cameraOffsetText = document.getElementById("cameraOffsetText");
       const cameraFovText = document.getElementById("cameraFovText");
 
-      // Definitii pentru moduri de camera (offset-uri si tinta de privit)
       const cameraModes = {
         1: {
           name: "Frontala",
@@ -214,6 +208,10 @@
       let introProgress = 0;
       const waitDuration = 4.0;
       const introDuration = 17.0;
+
+      let postIntroWait = false;
+      let postIntroTimer = 0;
+      const postIntroDuration = 7.0;
 
       let isTransitioning = false;
       let currentFovTarget = 130;
@@ -360,7 +358,6 @@
         model.add(fireLight);
       }
 
-      // Creeaza stalpi pe marginea drumului si fire vizuale (recycle pe Z)
       function createRoadsidePoles() {
         const towardRoad = poleSettings.laneX > 0 ? -1 : 1;
 
@@ -435,7 +432,6 @@
         }
       }
 
-      // Actualizeaza pozitia stalpilor in timpul animatiei (miscare spre camera)
       function updateRoadsidePoles(dt) {
         for (const pole of roadsidePoles) {
           pole.position.z -= poleSettings.speed * dt;
@@ -447,8 +443,6 @@
         }
       }
 
-      // Creeaza un personaj simplu procedural care alearga
-      // (cap, trunchi, brate, picioare, pantofi)
       function createRunner() {
         runnerGroup = new THREE.Group();
 
@@ -565,8 +559,6 @@
         }
       }
 
-      // Actualizeaza starea alergatorului: spawn, approach si chase
-      // Controleaza si scalarea in functie de distanta pentru efect de "apropiere"
       function updateRunner(dt, elapsed) {
         if (!runnerGroup || runnerFinished) return;
 
@@ -716,16 +708,13 @@
         return { worldCam, worldLook };
       }
 
-      // Loader pentru fisiere GLTF/GLB: incarcam elementele statice si dinamice
       const loader = new GLTFLoader();
-      // Incarcam scena (drum, iarba, fundal)
       loader.load("scene.glb", (gltf) => {
         const sceneGroup = gltf.scene;
         scene.add(sceneGroup);
 
         sceneGroup.traverse((child) => {
           if (child.isMesh) {
-            // SETĂRI DRUM
             if (child.name.toLowerCase() === "road") {
               roadMaterial = child.material;
               if (roadMaterial.map) {
@@ -735,20 +724,17 @@
               roadMaterial.map.offset.x = 0.02;
             }
 
-            // SETĂRI IARBĂ
             if (child.name.toLowerCase() === "grass") {
               grassMaterial = child.material;
               if (grassMaterial.map) {
                 grassMaterial.map.wrapS = grassMaterial.map.wrapT =
                   THREE.RepeatWrapping;
-                // Putem lăsa repetarea standard (1, 1) sau o putem mări dacă iarba pare "întinsă"
                 grassMaterial.map.repeat.set(5, 5);
               }
             }
           }
         });
       });
-      // Încărcăm MAȘINA (asigură-te că fișierul se numește exact car.glb)
       loader.load(
         "car.glb",
         (gltf) => {
@@ -760,7 +746,6 @@
           createHeadlightsForCar(carModel);
           createFireEffect(carModel);
 
-          // Bec interior pentru habitaclu.
           const interiorLight = new THREE.PointLight(0xfff1c1, 18, 20, 1.5);
           interiorLight.position.set(0, 1.35, 0.25);
           carModel.add(interiorLight);
@@ -773,11 +758,9 @@
         },
       );
 
-      // Poziția camerei
       camera.position.set(0, 20, 20);
       camera.lookAt(0, 10, 10);
 
-      // Handler pentru comenzi tastatura: schimbare mod camera, zoom, offset
       window.addEventListener("keydown", (event) => {
         const mode = cameraModes[activeCameraMode];
 
@@ -869,7 +852,6 @@
 
       updateCameraHud();
 
-      // Lumină ambientală minimă ca să vedem ceva
       const ambient = new THREE.AmbientLight(0xffffff, 0.28);
       scene.add(ambient);
 
@@ -879,34 +861,29 @@
       createRoadsidePoles();
       createRunner();
 
-      const intensity = 190; // Puterea luminii
-      const distance = 230; // Cât de departe să bată
+      const intensity = 190;
+      const distance = 230;
 
       function creeazaFar(xPos) {
         const far = new THREE.SpotLight(0xffffff, intensity, distance);
 
-        // Z = 2.5 este valoarea critică. Dacă farul e tot în mașină,
-        // mărește la 3.0 sau 3.5 până vezi că „iese” prin față.
         far.position.set(xPos, 0.6, 2.5);
 
         far.angle = Math.PI / 6;
         far.penumbra = 0.5;
-        far.decay = 1; // Face lumina să scadă natural în depărtare
+        far.decay = 1;
 
         scene.add(far);
 
-        // Ținta luminii (unde bat farurile)
         const target = new THREE.Object3D();
-        target.position.set(xPos, 0, 10); // Bat în față, spre depărtare
+        target.position.set(xPos, 0, 10);
         scene.add(target);
         far.target = target;
       }
 
-      // Apelăm funcția de două ori pentru cele două faruri
-      creeazaFar(-0.7); // Stânga
-      creeazaFar(0.7); // Dreapta
+      creeazaFar(-0.7);
+      creeazaFar(0.7);
 
-      // Bucla principala de animatie: update si render la fiecare frame
       function animate() {
         requestAnimationFrame(animate);
 
@@ -924,6 +901,16 @@
           });
         } else if (fireLight) {
           fireLight.intensity = 0;
+        }
+
+        if (postIntroWait) {
+          postIntroTimer += dt;
+
+          if (postIntroTimer >= postIntroDuration) {
+            postIntroWait = false;
+            driveStarted = true;
+            cameraModes[5].shake = true;
+          }
         }
 
         if (driveStarted) {
@@ -972,8 +959,12 @@
 
               if (p >= 1) {
                 introActive = false;
-                driveStarted = true;
+
+                postIntroWait = true;
+                postIntroTimer = 0;
+
                 setCameraMode(5);
+                cameraModes[5].shake = false;
               }
             }
           } else {
@@ -1003,14 +994,12 @@
       }
       animate();
 
-      // Ajustare fereastră la resize
       window.addEventListener("resize", () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
       });
 
-      // Buton Start: porneste intro si audio la click
       document.getElementById("btnPlay").addEventListener("click", () => {
         userClickedStart = true;
         if (sound && sound.context && sound.context.state === "suspended") {
